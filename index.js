@@ -89,7 +89,7 @@ var s3 = {
 };
 
 db.connect((error) => {
-  var generate = async ({prompt, quantity=1, service='dalle', size='512', seed, upscale_index}) => {
+  var generate = async ({prompt, quantity=1, service='dalle', size='512', seed, upscale_index, discord_message_id}) => {
     var generations = [];
 
     var id = _.join(_.times(6, i => Math.floor(Math.random() * 10)), ''); //TODO
@@ -136,16 +136,16 @@ db.connect((error) => {
       generations.push({prompt, service, size, url});
     }
     else if (service === 'midjourney') {
-      await query(`INSERT INTO generations (service, status, prompt, upscale_index) VALUES ('midjourney', 'unstarted', ?, ?)`, [prompt, upscale_index]);
+      await query(`INSERT INTO generations (service, status, prompt, upscale_index, discord_message_id) VALUES ('midjourney', 'unstarted', ?, ?, ?)`, [prompt, upscale_index, discord_message_id]);
     }
 
     return generations;
   }
 
   app.post('/generate', async (req, res) => {
-    var {prompt, quantity, service, size, upscale_index} = req.body;
+    var {prompt, quantity, service, size, upscale_index, discord_message_id} = req.body;
 
-    var generations = await generate({prompt, quantity, service, size, upscale_index});
+    var generations = await generate({prompt, quantity, service, size, upscale_index, discord_message_id});
 
     return res.json({generations});
   });
@@ -164,9 +164,9 @@ db.connect((error) => {
   });
 
   app.post('/finished-midjourney-generation', async (req, res) => {
-    var {url} = req.body;
+    var {url, discord_message_id} = req.body;
 
-    var generations = await query(`UPDATE generations SET status = 'finished', url = ? WHERE status = 'started'`, [url]);
+    var generations = await query(`UPDATE generations SET status = 'finished', url = ?, discord_message_id = ? WHERE status = 'started'`, [url, discord_message_id]);
 
     return res.json({generations});
   });
@@ -199,7 +199,7 @@ db.connect((error) => {
     var media = [];
 
     if (generations.length) {
-      var {insertId: id} = await query(`INSERT INTO media (prompt, service, size, upscale_index) VALUES (?, ?, ?, ?)`, [generations[0].prompt, 'midjourney', 1024, generations[0].upscale_index]);
+      var {insertId: id} = await query(`INSERT INTO media (prompt, service, size, upscale_index, file_extension, discord_message_id) VALUES (?, ?, ?, ?, ?, ?)`, [generations[0].prompt, 'midjourney', 1024, generations[0].upscale_index, 'png', generations[0].discord_message_id]);
 
       var newMedia = await query(`SELECT * FROM media WHERE id = ?`, [id]);
 
@@ -217,7 +217,7 @@ db.connect((error) => {
         Body: body
       }));
 
-      var url = s3.getSignedUrl(`media/${id}/${id}.jpg`);
+      var url = s3.getSignedUrl(`media/${id}/${id}.png`);
 
       media.push({...newMedia[0], url});
     }
