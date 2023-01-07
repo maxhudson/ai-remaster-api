@@ -260,9 +260,15 @@ db.connect((error) => {
     }
 
     var replicateHeaders = {
-      'Authorization': `Token ${process.env.REPLICATE_API_KEY}`,
+      'x-picsart-api-key': `${process.env.PICSART_API_KEY}`,
       'Content-Type': `application/json`
     };
+
+    // curl -X POST \
+    // 'https://api.picsart.io/tools/1.0/removebg' \
+    // -H 'x-picsart-api-key: APIKEYHERE' \
+    // -F 'output_type=cutout' \
+    // -F 'image_url=https://cdn140.picsart.com/13902645939997000779.jpg'
 
     var replicateBody = await post('https://api.replicate.com/v1/predictions', {"version": "9117a98dd15e931011b8b960963a2dec20ab493c6c0d3a134525273da1616abc", "input": {"image": req.body.url}}, replicateHeaders);
 
