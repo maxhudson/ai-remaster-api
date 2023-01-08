@@ -65,9 +65,9 @@ var dbConfig = {
 };
 
 /* istanbul ignore next */
-if (process.env.NODE_ENV === 'production') {
-  dbConfig.ssl = {ca: fs.readFileSync(`${__dirname}/rds-combined-ca-bundle.pem`)};
-}
+// if (process.env.NODE_ENV === 'production') {
+//   dbConfig.ssl = {ca: fs.readFileSync(`${__dirname}/../rds-combined-ca-bundle.pem`)};
+// }
 
 var db = mysql.createConnection({..._.omit(dbConfig, ['type']), multipleStatements: true, timezone: 'UTC'});
 
