@@ -89,7 +89,64 @@ var s3 = {
 };
 
 db.connect((error) => {
-  var generate = async ({prompt, quantity=1, service='dalle', size='512', seed, upscale_index, discord_message_id}) => {
+  var query = (string, args) => {
+    return new Promise((resolve, reject) => {
+      db.query(string, args, (error, result) => {
+          /* istanbul ignore if */
+          if (error) {
+            console.log(string, args); //eslint-disable-line
+            console.log(error); //eslint-disable-line
+
+            reject(error);
+          }
+          else {
+            resolve(result);
+          }
+      });
+    });
+  }
+
+  var post = async (url, body, headers) => {
+    var requestParams = {method: 'post', mode: 'cors'};
+
+    requestParams.body = JSON.stringify(body)
+    requestParams.headers = {...headers};
+
+    var response = await fetch(url, requestParams);
+
+    return await response.json();
+  };
+
+  var route = (uri, callback, {method = 'post', middleware = []} = {}) => {
+    app[method](uri, ...middleware, async (req, res) => {
+      var {body} = req;
+      var {code} = body;
+
+      var user = (await query('SELECT * FROM users WHERE code = ?', [code]))[0];
+
+      if (!user) return res.json({error: 'Please log in', type: 'permissions'});
+
+      try {
+        var result = await callback({...body, user, req, res, body});
+
+        return res.json(result || {});
+      }
+      catch(error) {
+        return res.json({error: error.message})
+      }
+    });
+  };
+
+  // var useTokens = async (tokenCount, user) => {
+  //   tokens = user.tokens;
+
+  //   //- throws error if not enough
+  //   if (tokenCount > user.tokens) throw new Error('');
+
+  //   await
+  // }
+
+  var generate = async ({prompt, user, quantity=1, service='dalle', size='512', seed, upscale_index, discord_message_id}) => {
     var generations = [];
 
     var id = _.join(_.times(6, i => Math.floor(Math.random() * 10)), ''); //TODO
@@ -136,43 +193,40 @@ db.connect((error) => {
       generations.push({prompt, service, size, url});
     }
     else if (service === 'midjourney') {
-      await query(`INSERT INTO generations (service, status, prompt, upscale_index, discord_message_id) VALUES ('midjourney', 'unstarted', ?, ?, ?)`, [prompt, upscale_index, discord_message_id]);
+      await query(`INSERT INTO generations (service, status, prompt, upscale_index, discord_message_id, user_id) VALUES ('midjourney', 'unstarted', ?, ?, ?, ?)`, [prompt, upscale_index, discord_message_id, user.id]);
     }
 
     return generations;
   }
 
-  app.post('/generate', async (req, res) => {
-    var {prompt, quantity, service, size, upscale_index, discord_message_id} = req.body;
+  route('/generate', async ({prompt, quantity, service, size, upscale_index, discord_message_id, user}) => {
+    var generations = await generate({prompt, quantity, service, size, upscale_index, discord_message_id, user});
 
-    var generations = await generate({prompt, quantity, service, size, upscale_index, discord_message_id});
-
-    return res.json({generations});
+    return {generations};
   });
 
-  app.get('/get-unstarted-midjourney-generations', async (req, res) => {
-    var generations = await query(`SELECT * FROM generations WHERE status = 'unstarted'`);
+  route('/get-unstarted-midjourney-generations', async ({user}) => {
+    var generations = await query(`SELECT * FROM generations WHERE status = 'unstarted' AND user_id = ?`, [user.id]);
 
-    return res.json({generations});
+    return {generations};
   });
 
-  app.post('/start-midjourney-generations', async (req, res) => {
-    //var {id} = req.body;
-    var generations = await query(`UPDATE generations SET status = 'started' WHERE status = 'unstarted'`);
-
-    return res.json({generations});
+  route('/start-midjourney-generations', async ({generationId, user}) => {
+    await query(`UPDATE generations SET status = 'started' WHERE id = ? AND user_id = ?`, [generationId, user.id]);
   });
 
-  app.post('/finished-midjourney-generation', async (req, res) => {
-    var {url, discord_message_id} = req.body;
+  route('/finished-midjourney-generation', async ({url, discord_message_id, user}) => {
+    var generations = await query(`UPDATE generations SET status = 'finished', url = ?, discord_message_id = ? WHERE status = 'started' AND user_id = ?`, [url, discord_message_id, user.id]);
 
-    var generations = await query(`UPDATE generations SET status = 'finished', url = ?, discord_message_id = ? WHERE status = 'started'`, [url, discord_message_id]);
-
-    return res.json({generations});
+    return {generations};
   });
 
-  app.post('/get-media', async (req, res) => {
-    var media = await query(`SELECT * FROM media WHERE deleted = 0 ORDER BY id DESC`);
+  route('/get-user', async ({user}) => {
+    return {user};
+  });
+
+  route('/get-media', async ({user}) => {
+    var media = await query(`SELECT * FROM media WHERE deleted = 0 AND user_id = ? ORDER BY id DESC`, [user.id]);
 
     media = await Promise.all(_.map(media, async (medium) => {
       var url = await s3.getSignedUrl(`media/${medium.id}/${medium.id}.${medium.file_extension || 'jpg'}`);
@@ -180,59 +234,56 @@ db.connect((error) => {
       return {...medium, url};
     }));
 
-    res.send({media});
+    return {media};
   });
 
-  app.post('/delete-medium', async (req, res) => {
-    var {id} = req.body;
-
-    await query('UPDATE media SET deleted = 1 WHERE id = ?', [id]);
-
-    res.send({});
+  route('/delete-medium', async ({id, user}) => {
+    await query('UPDATE media SET deleted = 1 WHERE id = ? AND user_id = ?', [id, user.id]);
   });
 
-  app.post('/get-newly-generated-media', async (req, res) => {
-    var generations = await query(`SELECT * FROM generations WHERE status = 'finished'`);
+  route('/get-newly-generated-media', async ({user}) => {
+    var generations = await query(`SELECT * FROM generations WHERE status = 'finished' AND user_id = ?`, [user.id]);
 
-    await query(`UPDATE generations SET status = 'mediaGenerated' WHERE status = 'finished'`);
+    await query(`UPDATE generations SET status = 'mediaGenerated' WHERE status = 'finished' AND user_id = ?`, [user.id]);
 
     var media = [];
 
     if (generations.length) {
-      var {insertId: id} = await query(`INSERT INTO media (prompt, service, size, upscale_index, file_extension, discord_message_id) VALUES (?, ?, ?, ?, ?, ?)`, [generations[0].prompt, 'midjourney', 1024, generations[0].upscale_index, 'png', generations[0].discord_message_id]);
+      await Promise.all(_.map(generations, async generation => {
+        var {insertId: id} = await query(`INSERT INTO media (prompt, service, size, upscale_index, file_extension, discord_message_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)`, [generation.prompt, 'midjourney', 1024, generation.upscale_index, 'png', generation.discord_message_id, user.id]);
 
-      var newMedia = await query(`SELECT * FROM media WHERE id = ?`, [id]);
+        var newMedia = await query(`SELECT * FROM media WHERE id = ?`, [id]);
 
-      var {body, res: imageResponse} = await new Promise((resolve) => {
-        request({url: generations[0].url, encoding: null}, (err, res, body) => {
-          resolve({body, res});
+        var {body, res: imageResponse} = await new Promise((resolve) => {
+          request({url: generation.url, encoding: null}, (err, res, body) => {
+            resolve({body, res});
+          });
         });
-      });
 
-      await S3.send(new PutObjectCommand({
-        Bucket: 'ai-remaster',
-        Key: `media/${id}/${id}.png`,
-        ContentType: imageResponse.headers['content-type'],
-        ContentLength: imageResponse.headers['content-length'],
-        Body: body
+        await S3.send(new PutObjectCommand({
+          Bucket: 'ai-remaster',
+          Key: `media/${id}/${id}.png`,
+          ContentType: imageResponse.headers['content-type'],
+          ContentLength: imageResponse.headers['content-length'],
+          Body: body
+        }));
+
+        var url = s3.getSignedUrl(`media/${id}/${id}.png`);
+
+        media.push({...newMedia[0], url});
       }));
-
-      var url = s3.getSignedUrl(`media/${id}/${id}.png`);
-
-      media.push({...newMedia[0], url});
     }
 
-    return res.send({media});
+    return {media};
   });
 
   const multer = require('multer');
   const upload = multer();
 
-  app.post('/upload-source-media', upload.single('file'), async (req, res) => {
-    var {fileExtension} = req.body;
+  route('/upload-source-media', async ({req, fileExtension, user}) => {
     var {file} = req;
 
-    var {insertId: id} = await query(`INSERT INTO media (type, file_extension) VALUES ('source', ?)`, [fileExtension.toLowerCase()]);
+    var {insertId: id} = await query(`INSERT INTO media (type, file_extension, user_id) VALUES ('source', ?, ?)`, [fileExtension.toLowerCase(), user.id]);
 
     await s3.put(`media/${id}/${id}.${fileExtension.toLowerCase()}`, file.buffer, {
       ContentType: file.mimetype
@@ -240,24 +291,13 @@ db.connect((error) => {
 
     var url = await s3.getSignedUrl(`media/${id}/${id}.${fileExtension.toLowerCase()}`);
 
-    res.send({media: [{id, type: 'source', url}]});
-  });
+    return {media: [{id, type: 'source', url}]};
+  }, {middleware: [upload.single('file')]});
 
-  app.post('/upscale-media', async (req, res) => {
+  route('/upscale-media', async ({req}) => {
     // var resp = await deepai.callStandardApi("torch-srgan", {
     //   image: req.body.url,
     // });
-
-    var post = async (url, body, headers) => {
-      var requestParams = {method: 'post', mode: 'cors'};
-
-      requestParams.body = JSON.stringify(body)
-      requestParams.headers = {...headers};
-
-      var response = await fetch(url, requestParams);
-
-      return await response.json();
-    }
 
     var replicateHeaders = {
       'x-picsart-api-key': `${process.env.PICSART_API_KEY}`,
@@ -303,23 +343,6 @@ db.connect((error) => {
 
     // res.send({media: [{id, type: 'generation', url}]});
   });
-
-  var query = (string, args) => {
-    return new Promise((resolve, reject) => {
-      db.query(string, args, (error, result) => {
-          /* istanbul ignore if */
-          if (error) {
-            console.log(string, args); //eslint-disable-line
-            console.log(error); //eslint-disable-line
-
-            reject(error);
-          }
-          else {
-            resolve(result);
-          }
-      });
-    });
-  }
 });
 
 // // app.post('/post', (req, res, next) => {
