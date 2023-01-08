@@ -147,9 +147,7 @@ db.connect((error) => {
   // }
 
   var generate = async ({prompt, user, quantity=1, service='dalle', size='512', seed, upscale_index, discord_message_id}) => {
-    var generations = [];
-
-    var id = _.join(_.times(6, i => Math.floor(Math.random() * 10)), ''); //TODO
+    var media = [];
 
     if (service === 'dreamstudio') {
       var {images} = await generateAsync({
@@ -167,10 +165,10 @@ db.connect((error) => {
         await fs.unlink(filePath);
         await fs.rmdir(_.dropRight(filePath.split('/')).join('/'));
 
-        generations.push({prompt, service, size, url});
+        media.push({prompt, service, size, url});
       }));
     }
-    else if (service === 'dalle'){
+    else if (service === 'dalle') {
       const response = await openai.createImage({
         prompt,
         n: 1,
@@ -183,6 +181,8 @@ db.connect((error) => {
         });
       });
 
+      var {insertId: id} = await query(`INSERT INTO media (prompt, service, size, file_extension, user_id, type) VALUES (?, ?, ?, ?, ?, 'generation')`, [prompt, 'midjourney', size, 'jpg', user.id]);
+
       await s3.put(`media/${id}/${id}.jpg`, body, {
         ContentType: res.headers['content-type'],
         ContentLength: res.headers['content-length'],
@@ -190,19 +190,19 @@ db.connect((error) => {
 
       var url = await s3.getSignedUrl(`media/${id}/${id}.jpg`);
 
-      generations.push({prompt, service, size, url});
+      media.push({id, prompt, service, size, url, type: 'generation'});
     }
     else if (service === 'midjourney') {
       await query(`INSERT INTO generations (service, status, prompt, upscale_index, discord_message_id, user_id) VALUES ('midjourney', 'unstarted', ?, ?, ?, ?)`, [prompt, upscale_index, discord_message_id, user.id]);
     }
 
-    return generations;
+    return media;
   }
 
   route('/generate', async ({prompt, quantity, service, size, upscale_index, discord_message_id, user}) => {
-    var generations = await generate({prompt, quantity, service, size, upscale_index, discord_message_id, user});
+    var media = await generate({prompt, quantity, service, size, upscale_index, discord_message_id, user});
 
-    return {generations};
+    return {media};
   });
 
   route('/get-unstarted-midjourney-generations', async ({user}) => {
