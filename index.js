@@ -66,7 +66,7 @@ var dbConfig = {
 
 /* istanbul ignore next */
 if (process.env.NODE_ENV === 'production') {
-  dbConfig.ssl = {ca: fs.readFileSync(`${__dirname}/../rds-combined-ca-bundle.pem`)};
+  dbConfig.ssl = {ca: fs.readFileSync(`${__dirname}/rds-combined-ca-bundle.pem`)};
 }
 
 var db = mysql.createConnection({..._.omit(dbConfig, ['type']), multipleStatements: true, timezone: 'UTC'});
@@ -109,7 +109,7 @@ db.connect((error) => {
   var post = async (url, body, headers) => {
     var requestParams = {method: 'post', mode: 'cors'};
 
-    requestParams.body = JSON.stringify(body)
+    requestParams.body = JSON.stringify(body);
     requestParams.headers = {...headers};
 
     var response = await fetch(url, requestParams);
