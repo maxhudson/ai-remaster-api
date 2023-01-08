@@ -119,6 +119,8 @@ db.connect((error) => {
 
   var route = (uri, callback, {method = 'post', middleware = []} = {}) => {
     app[method](uri, ...middleware, async (req, res) => {
+      console.log(`[${method}] ${uri}`);
+
       var {body} = req;
       var {code} = body;
 
@@ -215,8 +217,8 @@ db.connect((error) => {
     await query(`UPDATE generations SET status = 'started' WHERE id = ? AND user_id = ?`, [generationId, user.id]);
   });
 
-  route('/finished-midjourney-generation', async ({url, discord_message_id, user}) => {
-    var generations = await query(`UPDATE generations SET status = 'finished', url = ?, discord_message_id = ? WHERE status = 'started' AND user_id = ?`, [url, discord_message_id, user.id]);
+  route('/finished-midjourney-generation', async ({generationId, url, discord_message_id, user}) => {
+    var generations = await query(`UPDATE generations SET status = 'finished', url = ?, discord_message_id = ? WHERE id = ? AND user_id = ?`, [url, discord_message_id, generationId, user.id]);
 
     return {generations};
   });
@@ -268,7 +270,7 @@ db.connect((error) => {
           Body: body
         }));
 
-        var url = s3.getSignedUrl(`media/${id}/${id}.png`);
+        var url = await s3.getSignedUrl(`media/${id}/${id}.png`);
 
         media.push({...newMedia[0], url});
       }));
