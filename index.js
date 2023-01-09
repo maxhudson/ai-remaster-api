@@ -282,9 +282,10 @@ db.connect((error) => {
   const multer = require('multer');
   const upload = multer();
 
-  route('/upload-source-media', async ({req, fileExtension, user}) => {
+  route('/upload-source-media', async ({req, body, user}) => {
     var {file} = req;
-
+    var {fileExtension} = body;
+    console.log(body, file, user);
     var {insertId: id} = await query(`INSERT INTO media (type, file_extension, user_id) VALUES ('source', ?, ?)`, [fileExtension.toLowerCase(), user.id]);
 
     await s3.put(`media/${id}/${id}.${fileExtension.toLowerCase()}`, file.buffer, {
