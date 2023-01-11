@@ -54,6 +54,7 @@ app.listen(port, () => console.log(`API running on port ${port}`));// eslint-dis
 //misc
 var _ = require('lodash');
 var fetch = require('node-fetch-commonjs');
+var { Image } = require('image-js')
 
 //db
 var dbConfig = {
@@ -85,6 +86,14 @@ var s3 = {
       Bucket: 'ai-remaster',
       Key: key
     }), {expiresIn: 60 * 60 * 24 * 7});
+  },
+  getBuffer: async (key) => {
+    return await (
+      await S3.send(new GetObjectCommand({
+        Bucket: 'ai-remaster',
+        Key: key
+      }))
+    ).Body.toArray();
   }
 };
 
@@ -102,6 +111,14 @@ db.connect((error) => {
           else {
             resolve(result);
           }
+      });
+    });
+  }
+
+  var getImageFromUrl = async (url) => {
+    return new Promise((resolve) => {
+      request({url, encoding: null}, (err, res, body) => {
+        resolve({body, res});
       });
     });
   }
@@ -133,7 +150,9 @@ db.connect((error) => {
 
         return res.json(result || {});
       }
-      catch(error) {
+      catch (error) {
+        console.error(error);
+
         return res.json({error: error.message})
       }
     });
@@ -177,11 +196,7 @@ db.connect((error) => {
         size: `${size}x${size}`,
       });
 
-      var {body, res} = await new Promise((resolve) => {
-        request({url: response.data.data[0].url, encoding: null}, (err, res, body) => {
-          resolve({body, res});
-        });
-      });
+      var {body, res} = await getImageFromUrl(response.data.data[0].url);
 
       var {insertId: id} = await query(`INSERT INTO media (prompt, service, size, file_extension, user_id, type) VALUES (?, ?, ?, ?, ?, 'generation')`, [prompt, 'midjourney', size, 'jpg', user.id]);
 
@@ -256,11 +271,7 @@ db.connect((error) => {
 
         var newMedia = await query(`SELECT * FROM media WHERE id = ?`, [id]);
 
-        var {body, res: imageResponse} = await new Promise((resolve) => {
-          request({url: generation.url, encoding: null}, (err, res, body) => {
-            resolve({body, res});
-          });
-        });
+        var {body, res: imageResponse} = await getImageFromUrl(generation.url);
 
         await S3.send(new PutObjectCommand({
           Bucket: 'ai-remaster',
@@ -282,10 +293,48 @@ db.connect((error) => {
   const multer = require('multer');
   const upload = multer();
 
+  route('/url-to-medium', async ({url, user}) => {
+    var {insertId: id} = await query(`INSERT INTO media (type, file_extension, user_id) VALUES ('source', ?, ?)`, ['jpg', user.id]);
+
+    var newMedia = await query(`SELECT * FROM media WHERE id = ?`, [id]);
+
+    var {body, res: imageResponse} = await getImageFromUrl(url);
+
+    await S3.send(new PutObjectCommand({
+      Bucket: 'ai-remaster',
+      Key: `media/${id}/${id}.jpg`,
+      ContentType: imageResponse.headers['content-type'],
+      ContentLength: imageResponse.headers['content-length'],
+      Body: body
+    }));
+
+    var url = await s3.getSignedUrl(`media/${id}/${id}.jpg`);
+
+    return {medium: {...newMedia[0], url}}
+  });
+
+  route('/crop-medium', async ({mediumId: id, cropData}) => {
+    var [medium] = await query(`SELECT * FROM media WHERE id = ?`, [id]);
+
+    var buffer = await s3.getBuffer(`media/${id}/${id}.${medium.file_extension.toLowerCase()}`);
+
+    var image = await Image.load(buffer);
+
+    image = image.crop(cropData);
+
+    await s3.put(`media/${id}/${id}.${medium.file_extension.toLowerCase()}`, image.toBuffer(), {
+      ContentType: 'image/jpeg'
+    });
+
+    var url = await s3.getSignedUrl(`media/${id}/${id}.${medium.file_extension.toLowerCase()}`);
+
+    return {medium: {...medium, url}}
+  });
+
   route('/upload-source-media', async ({req, body, user}) => {
     var {file} = req;
     var {fileExtension} = body;
-    console.log(body, file, user);
+
     var {insertId: id} = await query(`INSERT INTO media (type, file_extension, user_id) VALUES ('source', ?, ?)`, [fileExtension.toLowerCase(), user.id]);
 
     await s3.put(`media/${id}/${id}.${fileExtension.toLowerCase()}`, file.buffer, {
