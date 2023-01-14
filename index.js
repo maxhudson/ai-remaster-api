@@ -258,7 +258,7 @@ db.connect((error) => {
     await query('UPDATE media SET deleted = 1 WHERE id = ? AND user_id = ?', [id, user.id]);
   });
 
-  route('/get-newly-generated-media', async ({user}) => {
+  route('/get-newly-generated-media', async ({user, maxId}) => {
     var generations = await query(`SELECT * FROM generations WHERE status = 'finished' AND user_id = ?`, [user.id]);
 
     await query(`UPDATE generations SET status = 'mediaGenerated' WHERE status = 'finished' AND user_id = ?`, [user.id]);
@@ -269,8 +269,6 @@ db.connect((error) => {
       await Promise.all(_.map(generations, async generation => {
         var {insertId: id} = await query(`INSERT INTO media (prompt, service, size, upscale_index, file_extension, discord_message_id, user_id) VALUES (?, ?, ?, ?, ?, ?, ?)`, [generation.prompt, 'midjourney', 1024, generation.upscale_index, 'png', generation.discord_message_id, user.id]);
 
-        var newMedia = await query(`SELECT * FROM media WHERE id = ?`, [id]);
-
         var {body, res: imageResponse} = await getImageFromUrl(generation.url);
 
         await S3.send(new PutObjectCommand({
@@ -280,12 +278,16 @@ db.connect((error) => {
           ContentLength: imageResponse.headers['content-length'],
           Body: body
         }));
-
-        var url = await s3.getSignedUrl(`media/${id}/${id}.png`);
-
-        media.push({...newMedia[0], url});
       }));
     }
+
+    var media = await query(`SELECT * FROM media WHERE id > ? AND user_id = ?`, [maxId, user.id]);
+
+    media = await Promise.all(_.map(media, async medium => {
+      var url = await s3.getSignedUrl(`media/${medium.id}/${medium.id}.png`);
+
+      return {...medium, url};
+    }));
 
     return {media};
   });
